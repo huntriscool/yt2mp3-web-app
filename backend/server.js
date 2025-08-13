@@ -1,48 +1,62 @@
-import express from 'express';
-import { exec } from 'child_process';
-import path from 'path';
-import fs from 'fs';
+const express = require('express');
+const ytdl = require('@distube/ytdl-core');
+const cors = require('cors');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-app.use(express.json());
+app.use(cors());
 
-const DOWNLOAD_DIR = path.resolve('downloads');
-if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
+// FFmpeg check
+function checkFFmpeg() {
+  try {
+    execSync('ffmpeg -version', { stdio: 'ignore' });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
 
-app.post('/api/download', (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: 'No URL provided' });
+app.get('/download', async (req, res) => {
+  const videoURL = req.query.url;
+  if (!videoURL || !ytdl.validateURL(videoURL)) {
+    return res.status(400).json({ error: 'Invalid YouTube URL' });
+  }
 
-  // Unique file names to prevent clashes
-  const uniqueId = Date.now();
-  const outputTemplate = path.join(DOWNLOAD_DIR, `audio-${uniqueId}.%(ext)s`);
+  if (!checkFFmpeg()) {
+    return res.status(500).json({ error: 'FFmpeg is not installed or not in PATH' });
+  }
 
-  // yt-dlp downloads & converts to mp3 with -x --audio-format mp3 flags
-  const cmd = `yt-dlp -x --audio-format mp3 -o "${outputTemplate}" ${url}`;
-
-  exec(cmd, (error, stdout, stderr) => {
-    if (error) {
-      console.error('Download error:', error);
-      return res.status(500).json({ error: 'Failed to download video/audio' });
+  try {
+    const info = await ytdl.getInfo(videoURL);
+    if (info.videoDetails.isPrivate) {
+      return res.status(403).json({ error: 'Video is private' });
+    }
+    if (info.videoDetails.age_restricted) {
+      return res.status(403).json({ error: 'Video is age-restricted' });
     }
 
-    // mp3 file path
-    const mp3Path = path.join(DOWNLOAD_DIR, `audio-${uniqueId}.mp3`);
+    const title = info.videoDetails.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    res.header('Content-Disposition', `attachment; filename="${title}.mp3"`);
 
-    if (!fs.existsSync(mp3Path)) {
-      console.error('MP3 not found:', mp3Path);
-      return res.status(500).json({ error: 'MP3 file not found after conversion' });
-    }
+    const stream = ytdl(videoURL, { filter: 'audioonly' });
+    const ffmpeg = require('fluent-ffmpeg');
 
-    res.download(mp3Path, 'youtube-audio.mp3', (err) => {
-      if (err) console.error('Sending file error:', err);
-      // Delete file after sending
-      fs.unlink(mp3Path, (err) => {
-        if (err) console.error('Failed to delete file:', err);
-      });
-    });
-  });
+    ffmpeg(stream)
+      .audioBitrate(128)
+      .toFormat('mp3')
+      .on('error', err => {
+        console.error('FFmpeg error:', err.message);
+        res.status(500).json({ error: 'Error processing video: ' + err.message });
+      })
+      .pipe(res);
+
+  } catch (err) {
+    console.error('Processing error:', err);
+    res.status(500).json({ error: 'Failed to process video: ' + err.message });
+  }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Backend listening on http://localhost:${PORT}`));
+const PORT = 4000;
+app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
