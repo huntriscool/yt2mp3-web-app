@@ -20,6 +20,8 @@ function checkFFmpeg() {
 
 app.get('/download', async (req, res) => {
   const videoURL = req.query.url;
+  const quality = req.query.quality || 'medium'; // default to medium
+  
   if (!videoURL || !ytdl.validateURL(videoURL)) {
     return res.status(400).json({ error: 'Invalid YouTube URL' });
   }
@@ -40,11 +42,26 @@ app.get('/download', async (req, res) => {
     const title = info.videoDetails.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
     res.header('Content-Disposition', `attachment; filename="${title}.mp3"`);
 
-    const stream = ytdl(videoURL, { filter: 'audioonly' });
+    // Set quality based on user selection
+    let audioBitrate;
+    switch(quality) {
+      case 'low':
+        audioBitrate = 96;
+        break;
+      case 'high':
+        audioBitrate = 320;
+        break;
+      case 'medium':
+      default:
+        audioBitrate = 128;
+        break;
+    }
+
+    const stream = ytdl(videoURL, { filter: 'audioonly', quality: 'highestaudio' });
     const ffmpeg = require('fluent-ffmpeg');
 
     ffmpeg(stream)
-      .audioBitrate(128)
+      .audioBitrate(audioBitrate)
       .toFormat('mp3')
       .on('error', err => {
         console.error('FFmpeg error:', err.message);
@@ -55,6 +72,32 @@ app.get('/download', async (req, res) => {
   } catch (err) {
     console.error('Processing error:', err);
     res.status(500).json({ error: 'Failed to process video: ' + err.message });
+  }
+});
+
+// New endpoint to get video info for preview
+app.get('/video-info', async (req, res) => {
+  const videoURL = req.query.url;
+  
+  if (!videoURL || !ytdl.validateURL(videoURL)) {
+    return res.status(400).json({ error: 'Invalid YouTube URL' });
+  }
+
+  try {
+    const info = await ytdl.getInfo(videoURL);
+    const videoDetails = info.videoDetails;
+    
+    res.json({
+      title: videoDetails.title,
+      author: videoDetails.author.name,
+      lengthSeconds: videoDetails.lengthSeconds,
+      viewCount: videoDetails.viewCount,
+      thumbnail: videoDetails.thumbnails[videoDetails.thumbnails.length - 1].url,
+      description: videoDetails.shortDescription?.substring(0, 200) + '...' || 'No description available'
+    });
+  } catch (err) {
+    console.error('Error fetching video info:', err);
+    res.status(500).json({ error: 'Failed to fetch video information' });
   }
 });
 
